@@ -7,6 +7,8 @@ import com.example.data.model.ContentionSeverity
 import com.example.data.model.CpuReadyResult
 import com.example.data.model.DrsRecommendation
 import com.example.data.model.HostWorkload
+import com.example.data.model.SummationBreakdown
+import com.example.data.model.SummationInputMode
 import com.example.data.model.VmProfile
 import com.example.data.model.WhatIfScenarioType
 import com.example.data.model.WhatIfSimulationResult
@@ -88,6 +90,81 @@ object CalculatorEngine {
             latencyDelayMsPerSec = latencyDelayMsPerSec,
             coSchedulingSkewFactor = coSchedulingSkewFactor,
             actionableInsights = insights
+        )
+    }
+
+    /**
+     * Calculates comprehensive Summation vs Per-vCPU conversion metrics, steps, and mathematical breakdown
+     */
+    fun calculateSummationBreakdown(
+        inputMode: SummationInputMode,
+        inputValue: Double,
+        samplePeriodSec: Int,
+        vCpuCount: Int
+    ): SummationBreakdown {
+        val safeSampleSec = max(1, samplePeriodSec)
+        val safeVcpus = max(1, vCpuCount)
+        val samplePeriodMs = safeSampleSec * 1000.0
+
+        val summationMs: Double
+        val avgPerVcpuMs: Double
+        val perVcpuPercent: Double
+        val totalPercent: Double
+        val formulaExplanation: String
+        val steps = mutableListOf<String>()
+
+        when (inputMode) {
+            SummationInputMode.SUMMATION_MS -> {
+                summationMs = max(0.0, inputValue)
+                avgPerVcpuMs = summationMs / safeVcpus
+                totalPercent = (summationMs / samplePeriodMs) * 100.0
+                perVcpuPercent = totalPercent / safeVcpus
+                formulaExplanation = "%RDY = (Summation_ms / (Sample_sec * 1000 * num_vCPUs)) * 100"
+
+                steps.add("1. Sample Interval: $safeSampleSec sec = ${samplePeriodMs.toInt()} ms total wall-clock per core.")
+                steps.add("2. vCenter Summation Counter: ${String.format("%.1f", summationMs)} ms accumulated across all $safeVcpus vCPUs.")
+                steps.add("3. Average Ready Time per vCPU = ${String.format("%.1f", summationMs)} ms ÷ $safeVcpus = ${String.format("%.1f", avgPerVcpuMs)} ms.")
+                steps.add("4. Normalized %RDY per vCPU = (${String.format("%.1f", summationMs)} ÷ (${samplePeriodMs.toInt()} × $safeVcpus)) × 100 = ${String.format("%.2f", perVcpuPercent)}%.")
+                steps.add("5. Summed Contention % across VM = ${String.format("%.2f", totalPercent)}%.")
+            }
+            SummationInputMode.AVG_PER_VCPU_MS -> {
+                avgPerVcpuMs = max(0.0, inputValue)
+                summationMs = avgPerVcpuMs * safeVcpus
+                perVcpuPercent = (avgPerVcpuMs / samplePeriodMs) * 100.0
+                totalPercent = perVcpuPercent * safeVcpus
+                formulaExplanation = "Summation_ms = (Avg_Per_vCPU_ms * num_vCPUs); %RDY = (Avg_Per_vCPU_ms / (Sample_sec * 1000)) * 100"
+
+                steps.add("1. Average per-vCPU wait: ${String.format("%.1f", avgPerVcpuMs)} ms on $safeVcpus vCPUs.")
+                steps.add("2. Converted Total Summation = ${String.format("%.1f", avgPerVcpuMs)} ms × $safeVcpus = ${String.format("%.1f", summationMs)} ms.")
+                steps.add("3. Sample Window: $safeSampleSec sec (${samplePeriodMs.toInt()} ms).")
+                steps.add("4. Calculated %RDY = (${String.format("%.1f", avgPerVcpuMs)} ÷ ${samplePeriodMs.toInt()}) × 100 = ${String.format("%.2f", perVcpuPercent)}%.")
+            }
+            SummationInputMode.PERCENT_RDY_TARGET -> {
+                perVcpuPercent = max(0.0, inputValue)
+                totalPercent = perVcpuPercent * safeVcpus
+                summationMs = (perVcpuPercent / 100.0) * samplePeriodMs * safeVcpus
+                avgPerVcpuMs = summationMs / safeVcpus
+                formulaExplanation = "Summation_ms = (%RDY / 100) * (Sample_sec * 1000) * num_vCPUs"
+
+                steps.add("1. Target Per-vCPU %RDY: ${String.format("%.2f", perVcpuPercent)}% on $safeVcpus vCPUs.")
+                steps.add("2. Total Sample Capacity: $safeSampleSec sec × 1000 ms × $safeVcpus vCPUs = ${(samplePeriodMs * safeVcpus).toInt()} ms total.")
+                steps.add("3. Required Summation ms = (${String.format("%.2f", perVcpuPercent)} / 100) × ${(samplePeriodMs * safeVcpus).toInt()} ms = ${String.format("%.1f", summationMs)} ms.")
+                steps.add("4. Equivalent Avg ms per vCPU = ${String.format("%.1f", avgPerVcpuMs)} ms.")
+            }
+        }
+
+        return SummationBreakdown(
+            inputMode = inputMode,
+            inputValue = inputValue,
+            summationMs = summationMs,
+            avgPerVcpuMs = avgPerVcpuMs,
+            totalReadyPercent = totalPercent,
+            perVcpuReadyPercent = perVcpuPercent,
+            samplePeriodSec = safeSampleSec,
+            samplePeriodMs = samplePeriodMs,
+            vCpuCount = safeVcpus,
+            formulaExplanation = formulaExplanation,
+            mathSteps = steps
         )
     }
 
@@ -511,6 +588,135 @@ object CalculatorEngine {
                 assignedNodeIndex = 3,
                 workloadType = "Analytics",
                 notes = "Elasticsearch indexing and log aggregation node."
+            )
+        )
+    }
+
+    /**
+     * Parses raw CSV, TSV, esxtop, RVTools, or PowerCLI metrics text and extracts Virtual Machines
+     */
+    fun parseLivePerformanceData(text: String, defaultNodeCount: Int = 4): List<VmProfile> {
+        val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        val parsedVms = mutableListOf<VmProfile>()
+        val safeNodes = max(1, defaultNodeCount)
+
+        var vmIndex = 1
+        for (line in lines) {
+            // Skip comments or table headers
+            if (line.startsWith("#") || line.startsWith("//") || line.lowercase().startsWith("vm name") || line.lowercase().startsWith("name,") || line.lowercase().startsWith("id,")) {
+                continue
+            }
+
+            // Split by comma, tab, or semicolon
+            val tokens = if (line.contains(",")) {
+                line.split(",").map { it.trim() }
+            } else if (line.contains("\t")) {
+                line.split("\t").map { it.trim() }
+            } else if (line.contains(";")) {
+                line.split(";").map { it.trim() }
+            } else {
+                line.split(Regex("\\s{2,}")).map { it.trim() }
+            }
+
+            if (tokens.isEmpty()) continue
+
+            var name = "imported-vm-$vmIndex"
+            var vcpus = 4
+            var ramGb = 16
+            var readyMs = 800.0
+            var cstpMs = 40.0
+            var sampleSec = 20
+            var workload = "App Server"
+            var notes = "Imported from live telemetry"
+
+            if (tokens.size >= 1 && tokens[0].isNotBlank()) {
+                name = tokens[0]
+            }
+
+            // Try to extract vCPUs (usually 2nd column or numeric token)
+            if (tokens.size >= 2) {
+                tokens[1].toIntOrNull()?.let { if (it > 0) vcpus = it }
+            }
+
+            // RAM GB (3rd column)
+            if (tokens.size >= 3) {
+                tokens[2].toIntOrNull()?.let { if (it > 0) ramGb = it }
+            }
+
+            // Ready Time ms or %RDY
+            if (tokens.size >= 4) {
+                val rdyVal = tokens[3].toDoubleOrNull()
+                if (rdyVal != null) {
+                    if (rdyVal < 100.0 && tokens[3].contains(".")) {
+                        // Might be in percentage form, convert to ms for 20s window
+                        readyMs = (rdyVal / 100.0) * (20 * 1000.0) * vcpus
+                    } else {
+                        readyMs = rdyVal
+                    }
+                }
+            }
+
+            // Co-Stop Time ms
+            if (tokens.size >= 5) {
+                tokens[4].toDoubleOrNull()?.let { cstpMs = it }
+            }
+
+            // Workload or tags
+            if (tokens.size >= 6 && tokens[5].isNotBlank()) {
+                workload = tokens[5]
+            }
+
+            if (tokens.size >= 7 && tokens[6].isNotBlank()) {
+                notes = tokens[6]
+            }
+
+            parsedVms.add(
+                VmProfile(
+                    name = name,
+                    vCpuCount = vcpus,
+                    ramGb = ramGb,
+                    readyTimeMs = readyMs,
+                    coStopTimeMs = cstpMs,
+                    samplePeriodSec = sampleSec,
+                    assignedNodeIndex = (vmIndex - 1) % safeNodes,
+                    workloadType = workload,
+                    notes = notes
+                )
+            )
+            vmIndex++
+        }
+
+        return parsedVms
+    }
+
+    /**
+     * Generates real-world live environment presets for fast one-tap import
+     */
+    fun getEnvironmentPresets(): List<Pair<String, List<VmProfile>>> {
+        return listOf(
+            "Enterprise SQL Contention (High %RDY)" to listOf(
+                VmProfile(name = "prd-sql-primary-01", vCpuCount = 16, ramGb = 128, readyTimeMs = 3800.0, coStopTimeMs = 1240.0, samplePeriodSec = 20, assignedNodeIndex = 0, workloadType = "Database", notes = "Heavy transactional OLTP SQL engine"),
+                VmProfile(name = "prd-sql-secondary-01", vCpuCount = 16, ramGb = 128, readyTimeMs = 3200.0, coStopTimeMs = 980.0, samplePeriodSec = 20, assignedNodeIndex = 0, workloadType = "Database", notes = "Always-On sync replica"),
+                VmProfile(name = "prd-reporting-ssrs-01", vCpuCount = 8, ramGb = 64, readyTimeMs = 2100.0, coStopTimeMs = 450.0, samplePeriodSec = 20, assignedNodeIndex = 1, workloadType = "Analytics", notes = "ETL pipeline batch processor"),
+                VmProfile(name = "prd-api-gateway-01", vCpuCount = 4, ramGb = 16, readyTimeMs = 600.0, coStopTimeMs = 30.0, samplePeriodSec = 20, assignedNodeIndex = 1, workloadType = "App Server", notes = "Edge ingress reverse proxy"),
+                VmProfile(name = "prd-api-gateway-02", vCpuCount = 4, ramGb = 16, readyTimeMs = 550.0, coStopTimeMs = 25.0, samplePeriodSec = 20, assignedNodeIndex = 2, workloadType = "App Server", notes = "Edge ingress reverse proxy"),
+                VmProfile(name = "prd-redis-cache-01", vCpuCount = 4, ramGb = 32, readyTimeMs = 400.0, coStopTimeMs = 15.0, samplePeriodSec = 20, assignedNodeIndex = 2, workloadType = "Database", notes = "Session state memory cache")
+            ),
+            "AVS AV36 Balanced Hybrid Pool" to listOf(
+                VmProfile(name = "avs-web-tier-01", vCpuCount = 2, ramGb = 8, readyTimeMs = 180.0, coStopTimeMs = 5.0, samplePeriodSec = 20, assignedNodeIndex = 0, workloadType = "Web Tier", notes = "Stateless IIS web pool"),
+                VmProfile(name = "avs-web-tier-02", vCpuCount = 2, ramGb = 8, readyTimeMs = 190.0, coStopTimeMs = 6.0, samplePeriodSec = 20, assignedNodeIndex = 1, workloadType = "Web Tier", notes = "Stateless IIS web pool"),
+                VmProfile(name = "avs-app-microservice-01", vCpuCount = 4, ramGb = 16, readyTimeMs = 350.0, coStopTimeMs = 18.0, samplePeriodSec = 20, assignedNodeIndex = 2, workloadType = "App Server", notes = "Spring Boot container host"),
+                VmProfile(name = "avs-app-microservice-02", vCpuCount = 4, ramGb = 16, readyTimeMs = 320.0, coStopTimeMs = 15.0, samplePeriodSec = 20, assignedNodeIndex = 3, workloadType = "App Server", notes = "Spring Boot container host"),
+                VmProfile(name = "avs-db-postgres-01", vCpuCount = 8, ramGb = 64, readyTimeMs = 820.0, coStopTimeMs = 75.0, samplePeriodSec = 20, assignedNodeIndex = 0, workloadType = "Database", notes = "Primary PostgreSQL database cluster"),
+                VmProfile(name = "avs-msg-kafka-broker-01", vCpuCount = 6, ramGb = 32, readyTimeMs = 620.0, coStopTimeMs = 45.0, samplePeriodSec = 20, assignedNodeIndex = 1, workloadType = "Messaging", notes = "Kafka streaming broker")
+            ),
+            "VDI Horizon Desktop Pool (Burst Contention)" to listOf(
+                VmProfile(name = "vdi-desk-finance-01", vCpuCount = 4, ramGb = 16, readyTimeMs = 1650.0, coStopTimeMs = 210.0, samplePeriodSec = 20, assignedNodeIndex = 0, workloadType = "VDI", notes = "Virtual desktop: Excel power user"),
+                VmProfile(name = "vdi-desk-finance-02", vCpuCount = 4, ramGb = 16, readyTimeMs = 1720.0, coStopTimeMs = 230.0, samplePeriodSec = 20, assignedNodeIndex = 0, workloadType = "VDI", notes = "Virtual desktop: Financial modeling"),
+                VmProfile(name = "vdi-desk-cad-eng-01", vCpuCount = 8, ramGb = 32, readyTimeMs = 2850.0, coStopTimeMs = 690.0, samplePeriodSec = 20, assignedNodeIndex = 1, workloadType = "VDI", notes = "Virtual workstation: AutoCAD rendering"),
+                VmProfile(name = "vdi-desk-general-01", vCpuCount = 2, ramGb = 8, readyTimeMs = 450.0, coStopTimeMs = 20.0, samplePeriodSec = 20, assignedNodeIndex = 1, workloadType = "VDI", notes = "Standard task worker desktop"),
+                VmProfile(name = "vdi-desk-general-02", vCpuCount = 2, ramGb = 8, readyTimeMs = 490.0, coStopTimeMs = 22.0, samplePeriodSec = 20, assignedNodeIndex = 2, workloadType = "VDI", notes = "Standard task worker desktop"),
+                VmProfile(name = "vdi-con-manager-01", vCpuCount = 4, ramGb = 16, readyTimeMs = 510.0, coStopTimeMs = 35.0, samplePeriodSec = 20, assignedNodeIndex = 2, workloadType = "App Server", notes = "Horizon Connection Server")
             )
         )
     }

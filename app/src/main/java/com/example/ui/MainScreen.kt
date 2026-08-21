@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Dns
@@ -59,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ui.components.ImportLiveDataDialog
 import com.example.ui.screens.ClusterConfigScreen
 import com.example.ui.screens.CpuReadyCalculatorScreen
 import com.example.ui.screens.DrsDashboardScreen
@@ -81,6 +83,10 @@ fun MainScreen(viewModel: MainViewModel) {
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val isDarkTheme by viewModel.isDarkTheme.collectAsStateWithLifecycle()
     val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
+    val showImportDialog by viewModel.showImportDialog.collectAsStateWithLifecycle()
+    val isImporting by viewModel.isImporting.collectAsStateWithLifecycle()
+    val importStatusMessage by viewModel.importStatusMessage.collectAsStateWithLifecycle()
+
     val snackbarHostState = remember { SnackbarHostState() }
     var showHelpDialog by remember { mutableStateOf(false) }
 
@@ -138,10 +144,22 @@ fun MainScreen(viewModel: MainViewModel) {
                     }
                 },
                 actions = {
+                    // Import Live Telemetry Button
+                    IconButton(
+                        onClick = { viewModel.openImportDialog() },
+                        modifier = Modifier.padding(end = 2.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudDownload,
+                            contentDescription = "Import Live Telemetry",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
                     // Normal / Dark Mode Toggle
                     IconButton(
                         onClick = { viewModel.toggleTheme() },
-                        modifier = Modifier.padding(end = 4.dp)
+                        modifier = Modifier.padding(end = 2.dp)
                     ) {
                         Icon(
                             imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
@@ -294,6 +312,17 @@ fun MainScreen(viewModel: MainViewModel) {
                         text = "• AV36 / AV36t: 36 Physical Cores (72 vCPUs), 576 GB RAM\n• AV52: 52 Cores (104 vCPUs), 1.5 TB RAM\n• AV64: 64 Cores (128 vCPUs), 1 TB RAM (Sapphire Rapids)",
                         style = MaterialTheme.typography.bodySmall
                     )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "5. vCenter Summation (ms) Conversion",
+                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "In vCenter performance charts, `cpu.ready.summation` aggregates wait time across all vCPUs. To convert summation ms into standard %RDY:\nPer-vCPU %RDY = (Summation_ms / (Sample_sec * 1000 * num_vCPUs)) * 100",
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
             },
             confirmButton = {
@@ -303,4 +332,21 @@ fun MainScreen(viewModel: MainViewModel) {
             }
         )
     }
+
+    // Live Telemetry Import Dialog
+    ImportLiveDataDialog(
+        isOpen = showImportDialog,
+        isImporting = isImporting,
+        errorMessage = importStatusMessage,
+        onDismiss = { viewModel.closeImportDialog() },
+        onImportVcenter = { url, user, token, ignoreSsl ->
+            viewModel.importFromVcenterRestApi(url, user, token, ignoreSsl)
+        },
+        onImportText = { text ->
+            viewModel.importFromRawText(text)
+        },
+        onImportPreset = { preset ->
+            viewModel.importFromPresetEnvironment(preset)
+        }
+    )
 }

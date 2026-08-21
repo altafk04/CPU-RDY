@@ -135,6 +135,32 @@ enum class WhatIfScenarioType {
     VM_VCPU_RIGHT_SIZING
 }
 
+enum class SummationInputMode(val displayName: String, val description: String) {
+    SUMMATION_MS("vCenter Summation (ms)", "Total accumulated ready ms across all vCPUs (vCenter metric)"),
+    AVG_PER_VCPU_MS("Average ms / vCPU", "Average milliseconds waited per single virtual CPU"),
+    PERCENT_RDY_TARGET("Target %RDY", "Calculate required Summation ms from desired %RDY target")
+}
+
+data class SummationBreakdown(
+    val inputMode: SummationInputMode,
+    val inputValue: Double,
+    val summationMs: Double,
+    val avgPerVcpuMs: Double,
+    val totalReadyPercent: Double,
+    val perVcpuReadyPercent: Double,
+    val samplePeriodSec: Int,
+    val samplePeriodMs: Double,
+    val vCpuCount: Int,
+    val formulaExplanation: String,
+    val mathSteps: List<String>
+)
+
+enum class ImportSourceType(val displayName: String, val iconName: String) {
+    VCENTER_REST_API("vCenter / ESXi REST API", "Api"),
+    PASTE_METRICS("Paste CSV / esxtop / RVTools", "ContentPaste"),
+    SAMPLE_ENVIRONMENTS("Sample Live Environments", "FolderZip")
+}
+
 data class WhatIfSimulationResult(
     val scenarioType: WhatIfScenarioType,
     val scenarioTitle: String,

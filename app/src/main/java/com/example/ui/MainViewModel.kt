@@ -11,9 +11,13 @@ import com.example.data.model.CpuReadyResult
 import com.example.data.model.DrsRecommendation
 import com.example.data.model.HostWorkload
 import com.example.data.model.SavedReport
+import com.example.data.model.SummationBreakdown
+import com.example.data.model.SummationInputMode
 import com.example.data.model.VmProfile
 import com.example.data.model.WhatIfScenarioType
 import com.example.data.model.WhatIfSimulationResult
+import com.example.data.remote.VcenterApiResult
+import com.example.data.remote.VcenterApiService
 import com.example.domain.CalculatorEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -52,6 +56,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _calcCoStopMs = MutableStateFlow(280.0)
     val calcCoStopMs: StateFlow<Double> = _calcCoStopMs.asStateFlow()
+
+    // Summation Mode & Value
+    private val _summationInputMode = MutableStateFlow(SummationInputMode.SUMMATION_MS)
+    val summationInputMode: StateFlow<SummationInputMode> = _summationInputMode.asStateFlow()
+
+    private val _summationInputValue = MutableStateFlow(1600.0)
+    val summationInputValue: StateFlow<Double> = _summationInputValue.asStateFlow()
+
+    // Live Summation Breakdown State
+    val summationBreakdown: StateFlow<SummationBreakdown> = combine(
+        _summationInputMode,
+        _summationInputValue,
+        _calcSamplePeriodSec,
+        _calcVcpuCount
+    ) { mode, value, sampleSec, vcpus ->
+        CalculatorEngine.calculateSummationBreakdown(
+            inputMode = mode,
+            inputValue = value,
+            samplePeriodSec = sampleSec,
+            vCpuCount = vcpus
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = CalculatorEngine.calculateSummationBreakdown(SummationInputMode.SUMMATION_MS, 1600.0, 20, 8)
+    )
+
+    // Live Data Import Dialog & State
+    private val _showImportDialog = MutableStateFlow(false)
+    val showImportDialog: StateFlow<Boolean> = _showImportDialog.asStateFlow()
+
+    private val _isImporting = MutableStateFlow(false)
+    val isImporting: StateFlow<Boolean> = _isImporting.asStateFlow()
+
+    private val _importStatusMessage = MutableStateFlow<String?>(null)
+    val importStatusMessage: StateFlow<String?> = _importStatusMessage.asStateFlow()
 
     // Computed Live CPU Ready Calculation
     val cpuReadyResult: StateFlow<CpuReadyResult> = combine(
@@ -139,10 +179,160 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         vCpuCount: Int? = null,
         coStopMs: Double? = null
     ) {
-        readyMs?.let { _calcReadyMs.value = it }
+        readyMs?.let {
+            _calcReadyMs.value = it
+            if (_summationInputMode.value == SummationInputMode.SUMMATION_MS) {
+                _summationInputValue.value = it
+            }
+        }
         samplePeriodSec?.let { _calcSamplePeriodSec.value = it }
         vCpuCount?.let { _calcVcpuCount.value = it }
         coStopMs?.let { _calcCoStopMs.value = it }
+    }
+
+    fun setSummationInputMode(mode: SummationInputMode) {
+        _summationInputMode.value = mode
+        // Synchronize input value with current calculation state
+        when (mode) {
+            SummationInputMode.SUMMATION_MS -> {
+                _summationInputValue.value = _calcReadyMs.value
+            }
+            SummationInputMode.AVG_PER_VCPU_MS -> {
+                val vcpu = kotlin.math.max(1, _calcVcpuCount.value)
+                _summationInputValue.value = _calcReadyMs.value / vcpu
+            }
+            SummationInputMode.PERCENT_RDY_TARGET -> {
+                val current = cpuReadyResult.value
+                _summationInputValue.value = current.perVcpuReadyPercent
+            }
+        }
+    }
+
+    fun setSummationInputValue(value: Double) {
+        val safeVal = kotlin.math.max(0.0, value)
+        _summationInputValue.value = safeVal
+        val sampleSec = _calcSamplePeriodSec.value
+        val vcpus = _calcVcpuCount.value
+        val samplePeriodMs = sampleSec * 1000.0
+
+        // Synchronize main readyMs input
+        when (_summationInputMode.value) {
+            SummationInputMode.SUMMATION_MS -> {
+                _calcReadyMs.value = safeVal
+            }
+            SummationInputMode.AVG_PER_VCPU_MS -> {
+                _calcReadyMs.value = safeVal * vcpus
+            }
+            SummationInputMode.PERCENT_RDY_TARGET -> {
+                _calcReadyMs.value = (safeVal / 100.0) * samplePeriodMs * vcpus
+            }
+        }
+    }
+
+    fun openImportDialog() {
+        _showImportDialog.value = true
+        _importStatusMessage.value = null
+    }
+
+    fun closeImportDialog() {
+        _showImportDialog.value = false
+        _isImporting.value = false
+        _importStatusMessage.value = null
+    }
+
+    fun importFromPresetEnvironment(presetName: String) {
+        viewModelScope.launch {
+            _isImporting.value = true
+            val presets = CalculatorEngine.getEnvironmentPresets()
+            val match = presets.find { it.first.contains(presetName, true) } ?: presets.firstOrNull()
+            if (match != null) {
+                vmDao.deleteAllVms()
+                vmDao.insertVms(match.second)
+                // Also update calculator with first VM's stats
+                match.second.firstOrNull()?.let { vm ->
+                    _calcReadyMs.value = vm.readyTimeMs
+                    _calcVcpuCount.value = vm.vCpuCount
+                    _calcCoStopMs.value = vm.coStopTimeMs
+                    _summationInputValue.value = vm.readyTimeMs
+                }
+                _userMessage.value = "Ingested live scenario: '${match.first}' (${match.second.size} VMs)"
+                closeImportDialog()
+            } else {
+                _importStatusMessage.value = "Preset environment not found"
+            }
+            _isImporting.value = false
+        }
+    }
+
+    fun importFromRawText(text: String) {
+        viewModelScope.launch {
+            _isImporting.value = true
+            try {
+                val cluster = clusterConfig.value
+                val vms = CalculatorEngine.parseLivePerformanceData(text, cluster.nodeCount)
+                if (vms.isNotEmpty()) {
+                    vmDao.deleteAllVms()
+                    vmDao.insertVms(vms)
+                    vms.firstOrNull()?.let { vm ->
+                        _calcReadyMs.value = vm.readyTimeMs
+                        _calcVcpuCount.value = vm.vCpuCount
+                        _calcCoStopMs.value = vm.coStopTimeMs
+                        _summationInputValue.value = vm.readyTimeMs
+                    }
+                    _userMessage.value = "Successfully imported ${vms.size} VMs from telemetry output!"
+                    closeImportDialog()
+                } else {
+                    _importStatusMessage.value = "Could not parse any valid VM lines. Please check format."
+                }
+            } catch (e: Exception) {
+                _importStatusMessage.value = "Error parsing text: ${e.localizedMessage}"
+            } finally {
+                _isImporting.value = false
+            }
+        }
+    }
+
+    fun importFromVcenterRestApi(
+        endpointUrl: String,
+        username: String,
+        sessionToken: String,
+        ignoreSsl: Boolean
+    ) {
+        viewModelScope.launch {
+            _isImporting.value = true
+            _importStatusMessage.value = "Connecting to $endpointUrl..."
+            val cluster = clusterConfig.value
+            val result = VcenterApiService.fetchLiveVcenterVms(
+                endpointUrl = endpointUrl,
+                username = username,
+                sessionToken = sessionToken,
+                ignoreSslErrors = ignoreSsl,
+                clusterNodeCount = cluster.nodeCount
+            )
+
+            when (result) {
+                is VcenterApiResult.Success -> {
+                    vmDao.deleteAllVms()
+                    vmDao.insertVms(result.vms)
+                    result.vms.firstOrNull()?.let { vm ->
+                        _calcReadyMs.value = vm.readyTimeMs
+                        _calcVcpuCount.value = vm.vCpuCount
+                        _calcCoStopMs.value = vm.coStopTimeMs
+                        _summationInputValue.value = vm.readyTimeMs
+                    }
+                    _userMessage.value = result.message
+                    closeImportDialog()
+                }
+                is VcenterApiResult.Error -> {
+                    _importStatusMessage.value = "${result.errorMessage}\n${result.technicalDetails ?: ""}"
+                }
+            }
+            _isImporting.value = false
+        }
+    }
+
+    fun clearImportStatusMessage() {
+        _importStatusMessage.value = null
     }
 
     fun updateClusterConfig(config: ClusterConfig) {

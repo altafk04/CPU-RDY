@@ -23,12 +23,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Calculate
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -39,6 +42,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
@@ -62,6 +66,7 @@ import com.example.ui.MainViewModel
 import com.example.ui.components.CpuReadyGauge
 import com.example.ui.components.MetricStatCard
 import com.example.ui.components.StatusPill
+import com.example.ui.components.SummationConverterCard
 import com.example.ui.theme.StatusCritical
 import com.example.ui.theme.StatusNormal
 import com.example.ui.theme.StatusOptimal
@@ -78,8 +83,10 @@ fun CpuReadyCalculatorScreen(
     val vCpuCount by viewModel.calcVcpuCount.collectAsStateWithLifecycle()
     val coStopMs by viewModel.calcCoStopMs.collectAsStateWithLifecycle()
     val result by viewModel.cpuReadyResult.collectAsStateWithLifecycle()
+    val summationBreakdown by viewModel.summationBreakdown.collectAsStateWithLifecycle()
 
     var readyInputText by remember(readyMs) { mutableStateOf(readyMs.toInt().toString()) }
+    var vcpuInputText by remember(vCpuCount) { mutableStateOf(vCpuCount.toString()) }
     var coStopInputText by remember(coStopMs) { mutableStateOf(coStopMs.toInt().toString()) }
 
     LazyColumn(
@@ -90,13 +97,13 @@ fun CpuReadyCalculatorScreen(
     ) {
         item {
             Spacer(modifier = Modifier.height(4.dp))
-            // Screen Title Banner
+            // Screen Title Banner & Top Quick Actions
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "VMware CPU Ready Calculator",
                         style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.ExtraBold),
@@ -109,18 +116,33 @@ fun CpuReadyCalculatorScreen(
                     )
                 }
 
-                Button(
-                    onClick = { viewModel.saveCurrentCalculationReport() },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.BookmarkBorder,
-                        contentDescription = "Save Report",
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Save", fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { viewModel.openImportDialog() },
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudDownload,
+                            contentDescription = "Import Live Data",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Import", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                    }
+
+                    Button(
+                        onClick = { viewModel.saveCurrentCalculationReport() },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.BookmarkBorder,
+                            contentDescription = "Save Report",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Save", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
                 }
             }
         }
@@ -266,70 +288,139 @@ fun CpuReadyCalculatorScreen(
                         )
                     }
 
-                    // vCPU Count Selector
-                    Column {
+                    // Customizable vCPU Count Selector
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "Assigned VM vCPUs:",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = {
-                                        if (vCpuCount > 1) viewModel.updateCalcInputs(vCpuCount = vCpuCount / 2)
-                                    },
-                                    enabled = vCpuCount > 1
-                                ) {
-                                    Icon(imageVector = Icons.Default.Remove, contentDescription = "Decrease vCPUs")
-                                }
+                            Column {
                                 Text(
-                                    text = "$vCpuCount vCPUs",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.ExtraBold),
-                                    color = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                    text = "VM vCPU Allocation:",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurface
                                 )
+                                Text(
+                                    text = "Fully customizable (1 to 128+ vCPUs)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                // Steppers
                                 IconButton(
                                     onClick = {
-                                        if (vCpuCount < 64) viewModel.updateCalcInputs(vCpuCount = (vCpuCount * 2).coerceAtMost(64))
+                                        if (vCpuCount > 4) viewModel.updateCalcInputs(vCpuCount = vCpuCount - 4)
+                                        else if (vCpuCount > 1) viewModel.updateCalcInputs(vCpuCount = 1)
                                     },
-                                    enabled = vCpuCount < 64
+                                    enabled = vCpuCount > 1,
+                                    modifier = Modifier.size(32.dp)
                                 ) {
-                                    Icon(imageVector = Icons.Default.Add, contentDescription = "Increase vCPUs")
+                                    Text("-4", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                }
+                                IconButton(
+                                    onClick = {
+                                        if (vCpuCount > 1) viewModel.updateCalcInputs(vCpuCount = vCpuCount - 1)
+                                    },
+                                    enabled = vCpuCount > 1,
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Remove, contentDescription = "Decrease 1 vCPU", modifier = Modifier.size(16.dp))
+                                }
+
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                                ) {
+                                    Text(
+                                        text = "$vCpuCount vCPU",
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontFamily = FontFamily.Monospace
+                                        ),
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        if (vCpuCount < 128) viewModel.updateCalcInputs(vCpuCount = vCpuCount + 1)
+                                    },
+                                    enabled = vCpuCount < 128,
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Default.Add, contentDescription = "Increase 1 vCPU", modifier = Modifier.size(16.dp))
+                                }
+                                IconButton(
+                                    onClick = {
+                                        if (vCpuCount <= 124) viewModel.updateCalcInputs(vCpuCount = vCpuCount + 4)
+                                        else viewModel.updateCalcInputs(vCpuCount = 128)
+                                    },
+                                    enabled = vCpuCount < 128,
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Text("+4", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                 }
                             }
                         }
 
-                        // Quick Select Chips
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            listOf(1, 2, 4, 8, 16, 32).forEach { count ->
-                                val isSelected = vCpuCount == count
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
-                                    border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .padding(horizontal = 2.dp)
-                                ) {
-                                    Button(
-                                        onClick = { viewModel.updateCalcInputs(vCpuCount = count) },
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = Color.Transparent,
-                                            contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
-                                        ),
-                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                                    ) {
-                                        Text(text = "${count}c", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                    }
+                        // Slider for direct scrubbing
+                        Slider(
+                            value = vCpuCount.toFloat().coerceIn(1f, 64f),
+                            onValueChange = { viewModel.updateCalcInputs(vCpuCount = it.toInt()) },
+                            valueRange = 1f..64f,
+                            steps = 62,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        // Direct numeric input for custom non-standard counts
+                        OutlinedTextField(
+                            value = vcpuInputText,
+                            onValueChange = { input ->
+                                vcpuInputText = input
+                                val parsed = input.toIntOrNull()
+                                if (parsed != null && parsed in 1..256) {
+                                    viewModel.updateCalcInputs(vCpuCount = parsed)
                                 }
+                            },
+                            label = { Text("Custom vCPU Count (1–256)") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+
+                        // Quick Select Chips including non-power-of-2 common allocations (e.g. 6, 12, 24)
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            listOf(1, 2, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128).forEach { count ->
+                                val isSelected = vCpuCount == count
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { viewModel.updateCalcInputs(vCpuCount = count) },
+                                    label = {
+                                        Text(
+                                            text = "${count}c",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        )
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                )
                             }
                         }
                     }
@@ -414,6 +505,15 @@ fun CpuReadyCalculatorScreen(
                     modifier = Modifier.weight(1f)
                 )
             }
+        }
+
+        // Summation & Counter Conversion Engine Card
+        item {
+            SummationConverterCard(
+                breakdown = summationBreakdown,
+                onModeChanged = { viewModel.setSummationInputMode(it) },
+                onValueChanged = { viewModel.setSummationInputValue(it) }
+            )
         }
 
         // Actionable Insights & Remediation
