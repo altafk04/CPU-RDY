@@ -1,0 +1,7 @@
+{
+  "name": "CPU RDY & DRS Analyzer",
+  "description": "VMware CPU RDY % calculator, Azure VMware Solution (AVS) node and cluster sizing, and DRS recommendation impact analysis dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
